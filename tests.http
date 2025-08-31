@@ -1,0 +1,7 @@
+### Test the onQueryReceived function locally
+POST http://localhost:7071/api/onQueryReceived
+Content-Type: application/json
+
+{
+    "question": "show me the top 5 products"
+}
