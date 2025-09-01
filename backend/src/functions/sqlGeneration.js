@@ -32,54 +32,45 @@ app.storageQueue('sqlGeneration', {
                 options: { encrypt: true, database: 'SampleDB' }
             };
 
-            const schemaQuery = `
-                SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE 
-                FROM INFORMATION_SCHEMA.COLUMNS 
-                WHERE TABLE_SCHEMA = 'dbo'
-                ORDER BY TABLE_NAME, ORDINAL_POSITION;
-            `;
-
+            const schemaQuery = `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo' ORDER BY TABLE_NAME, ORDINAL_POSITION;`;
+            
             context.log("Fetching database schema...");
             const schemaRows = await executeQuery(config, schemaQuery, context);
             context.log("Schema fetched successfully.");
 
-            // --- THE FIX IS HERE: We now add a few examples to the prompt ---
-            let schemaForPrompt = '/* The schema of a Microsoft SQL Server database is provided below. */\n';
-            schemaForPrompt += `
-/* 
-Here are some example rows from the tables to give you context about the data:
-- Products table: (ProductID: 1, ProductName: 'Laptop', Category: 'Electronics'), (ProductID: 3, ProductName: 'Coffee Maker', Category: 'Home Goods')
-- Sales table: (SaleID: 1, ProductID: 1, Quantity: 5), (SaleID: 2, ProductID: 2, Quantity: 10)
-*/\n\n`;
-
+            let schemaForPrompt = '/* The schema of a Microsoft SQL Server database is provided below. */\n/* Example rows: Products(ProductID: 1, ProductName: \'Laptop\', Category: \'Electronics\'), Sales(SaleID: 1, ProductID: 1, Quantity: 5) */\n\n';
             const formattedSchema = schemaRows.reduce((acc, { TABLE_NAME, COLUMN_NAME, DATA_TYPE }) => {
-                if (!acc[TABLE_NAME]) {
-                    acc[TABLE_NAME] = [];
-                }
+                if (!acc[TABLE_NAME]) { acc[TABLE_NAME] = []; }
                 acc[TABLE_NAME].push(`- ${COLUMN_NAME} (${DATA_TYPE})`);
                 return acc;
             }, {});
-
             for (const tableName in formattedSchema) {
                 schemaForPrompt += `Table: ${tableName}\nColumns:\n${formattedSchema[tableName].join('\n')}\n\n`;
             }
             
             const fullPrompt = `${schemaForPrompt}\n${instructions}\nQuestion: "${userQuestion}"\nSQL Query:`;
             
-            context.log("--- Sending Enriched Prompt to Gemini ---");
-            context.log(fullPrompt);
+            context.log("--- Sending Prompt to Gemini for SQL Generation ---");
+            const sqlResult = await model.generateContent(fullPrompt);
+            const sqlResponse = await sqlResult.response;
+            let generatedSql = sqlResponse.text().replace(/```sql/g, '').replace(/```/g, '').trim();
+            context.log(`--- Received SQL from Gemini: ---\n${generatedSql}`);
 
-            const result = await model.generateContent(fullPrompt);
-            const response = await result.response;
-            let generatedSql = response.text().replace(/```sql/g, '').replace(/```/g, '').trim();
-
-            context.log(`--- Received Response from Gemini: ---\n${generatedSql}`);
+            // --- NEW FEATURE: Generate SQL Explanation ---
+            context.log("--- Sending Prompt to Gemini for SQL Explanation ---");
+            const explanationPrompt = `Explain the following SQL query in one simple, human-readable sentence: ${generatedSql}`;
+            const explanationResult = await model.generateContent(explanationPrompt);
+            const explanationResponse = await explanationResult.response;
+            const sqlExplanation = explanationResponse.text().trim();
+            context.log(`--- Received Explanation: --- \n${sqlExplanation}`);
+            // --- END NEW FEATURE ---
             
-            return { correlationId, userQuestion, generatedSql };
+            // Add the new explanation to the output message
+            return { correlationId, userQuestion, generatedSql, sqlExplanation };
 
         } catch (error) {
             context.error("An error occurred during SQL generation:", error);
-            return { correlationId, userQuestion, generatedSql: "ERROR", error: "Failed to generate SQL due to an internal error." };
+            return { correlationId, userQuestion, generatedSql: "ERROR", sqlExplanation: "", error: "Failed to generate SQL due to an internal error." };
         }
     }
 });
