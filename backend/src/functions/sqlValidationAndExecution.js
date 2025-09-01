@@ -1,5 +1,6 @@
 const { app } = require('@azure/functions');
 const { Connection, Request } = require('tedious');
+const { executeQuery } = require('../utils/sqlHelper');
 
 const DENYLIST = ["DROP", "DELETE", "INSERT", "UPDATE", "CREATE", "ALTER", "TRUNCATE"];
 
@@ -37,51 +38,3 @@ app.storageQueue('sqlValidationAndExecution', {
     }
 });
 
-// --- Corrected Helper Function ---
-function executeQuery(config, query, context) {
-    return new Promise((resolve, reject) => {
-        const connection = new Connection(config);
-
-        connection.on('connect', (err) => {
-            if (err) {
-                context.error('Connection failed:', err);
-                return reject(err);
-            }
-            context.log('Successfully connected to Azure SQL.');
-            const request = new Request(query, (err, rowCount) => {
-                if (err) {
-                    context.error('Request failed:', err);
-                    reject(err);
-                }
-                connection.close();
-            });
-            const results = [];
-            request.on('row', (columns) => {
-                const row = {};
-                columns.forEach((column) => {
-                    row[column.metadata.colName] = column.value;
-                });
-                results.push(row);
-            });
-            request.on('requestCompleted', () => {
-                context.log("Request completed. Rows found:", results.length);
-                resolve(results);
-            });
-            request.on('error', (err) => {
-                context.error('Request error event:', err);
-                reject(err);
-            });
-
-            // This line was inside the 'connect' event handler, it needs to be here.
-            connection.execSql(request);
-        });
-
-        connection.on('error', (err) => {
-            context.error('Connection-level error:', err);
-            reject(err);
-        });
-        
-        // *** THE MISSING PIECE OF THE PUZZLE WAS THIS LINE ***
-        connection.connect();
-    });
-}
