@@ -2,49 +2,50 @@
 
 const { Connection, Request } = require('tedious');
 
-function executeQuery(config, query, context) {
+// --- NEW: Retry Logic ---
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1000;
+
+async function executeQuery(config, query, context) {
+    for (let i = 0; i < MAX_RETRIES; i++) {
+        try {
+            // Attempt to execute the query
+            return await tryExecuteQuery(config, query, context);
+        } catch (error) {
+            // If the error is a network error (ESOCKET), we retry
+            if (error.code === 'ESOCKET' && i < MAX_RETRIES - 1) {
+                context.warn(`Network error detected (ECONNRESET). Retrying in ${RETRY_DELAY_MS}ms... (Attempt ${i + 1}/${MAX_RETRIES})`);
+                await new Promise(res => setTimeout(res, RETRY_DELAY_MS)); // Wait before retrying
+            } else {
+                // If it's not a network error or we've run out of retries, throw the error
+                throw error;
+            }
+        }
+    }
+}
+
+function tryExecuteQuery(config, query, context) {
     return new Promise((resolve, reject) => {
         const connection = new Connection(config);
-
         connection.on('connect', (err) => {
-            if (err) {
-                context.error('Connection failed:', err);
-                return reject(err);
-            }
-            context.log('Successfully connected to Azure SQL.');
+            if (err) { return reject(err); }
             const request = new Request(query, (err, rowCount) => {
-                if (err) {
-                    context.error('Request failed:', err);
-                    reject(err);
-                }
+                if (err) { reject(err); }
                 connection.close();
             });
             const results = [];
             request.on('row', (columns) => {
                 const row = {};
-                columns.forEach((column) => {
-                    row[column.metadata.colName] = column.value;
-                });
+                columns.forEach((column) => { row[column.metadata.colName] = column.value; });
                 results.push(row);
             });
             request.on('requestCompleted', () => {
-                // *** THE FIX IS HERE ***
-                // We use results.length instead of the out-of-scope rowCount variable.
-                context.log(`Request completed. Rows found: ${results.length}`);
                 resolve(results);
             });
-            request.on('error', (err) => {
-                context.error('Request error event:', err);
-                reject(err);
-            });
+            request.on('error', (err) => { reject(err); });
             connection.execSql(request);
         });
-
-        connection.on('error', (err) => {
-            context.error('Connection-level error:', err);
-            reject(err);
-        });
-
+        connection.on('error', (err) => { reject(err); });
         connection.connect();
     });
 }

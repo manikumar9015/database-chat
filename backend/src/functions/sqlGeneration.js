@@ -1,3 +1,5 @@
+// src/functions/sqlGeneration.js (FINAL CORRECTED VERSION)
+
 const { app } = require('@azure/functions');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { executeQuery } = require('../utils/sqlHelper');
@@ -11,7 +13,7 @@ Given the database schema and a user question, generate a single, valid T-SQL qu
 `;
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });  
 
 app.storageQueue('sqlGeneration', {
     queueName: 'queryjobs',
@@ -22,7 +24,9 @@ app.storageQueue('sqlGeneration', {
         connection: 'AzureWebJobsStorage'
     },
     handler: async (queueItem, context) => {
-        const { correlationId, userQuestion } = queueItem.returnValue;
+        // --- THE FIX IS HERE ---
+        // The queue message is now a flat object, not nested.
+        const { correlationId, userQuestion } = queueItem;
         context.log(`SQL Generation triggered for question: "${userQuestion}"`);
 
         try {
@@ -32,8 +36,13 @@ app.storageQueue('sqlGeneration', {
                 options: { encrypt: true, database: 'SampleDB' }
             };
 
-            const schemaQuery = `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo' ORDER BY TABLE_NAME, ORDINAL_POSITION;`;
-            
+            const schemaQuery = `
+                SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = 'dbo'
+                ORDER BY TABLE_NAME, ORDINAL_POSITION;
+            `;
+
             context.log("Fetching database schema...");
             const schemaRows = await executeQuery(config, schemaQuery, context);
             context.log("Schema fetched successfully.");
@@ -50,22 +59,18 @@ app.storageQueue('sqlGeneration', {
             
             const fullPrompt = `${schemaForPrompt}\n${instructions}\nQuestion: "${userQuestion}"\nSQL Query:`;
             
-            context.log("--- Sending Prompt to Gemini for SQL Generation ---");
+            context.log("--- Sending Enriched Prompt to Gemini ---");
             const sqlResult = await model.generateContent(fullPrompt);
             const sqlResponse = await sqlResult.response;
             let generatedSql = sqlResponse.text().replace(/```sql/g, '').replace(/```/g, '').trim();
             context.log(`--- Received SQL from Gemini: ---\n${generatedSql}`);
 
-            // --- NEW FEATURE: Generate SQL Explanation ---
-            context.log("--- Sending Prompt to Gemini for SQL Explanation ---");
             const explanationPrompt = `Explain the following SQL query in one simple, human-readable sentence: ${generatedSql}`;
             const explanationResult = await model.generateContent(explanationPrompt);
             const explanationResponse = await explanationResult.response;
             const sqlExplanation = explanationResponse.text().trim();
             context.log(`--- Received Explanation: --- \n${sqlExplanation}`);
-            // --- END NEW FEATURE ---
             
-            // Add the new explanation to the output message
             return { correlationId, userQuestion, generatedSql, sqlExplanation };
 
         } catch (error) {
